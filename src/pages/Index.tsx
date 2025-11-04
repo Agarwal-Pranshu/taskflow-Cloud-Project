@@ -3,14 +3,13 @@ import { Plus, CheckCircle2, Circle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { TaskCard } from "@/components/TaskCard";
 import { TaskDialog } from "@/components/TaskDialog";
-import { supabase } from "@/integrations/supabase/client";
 import { toast } from "@/hooks/use-toast";
 
 interface Task {
   id: string;
   title: string;
   description: string | null;
-  completed: boolean;
+  status: string; // "active" or "completed"
   created_at: string;
   updated_at: string;
 }
@@ -22,15 +21,13 @@ const Index = () => {
   const [editingTask, setEditingTask] = useState<Task | null>(null);
   const [filter, setFilter] = useState<"all" | "active" | "completed">("all");
 
-  // Fetch tasks
+  const API_BASE = "http://<YOUR_EC2_PUBLIC_IP>:3001/api/tasks";
+
+  // Fetch tasks from DynamoDB through your backend
   const fetchTasks = async () => {
     try {
-      const { data, error } = await supabase
-        .from("tasks")
-        .select("*")
-        .order("created_at", { ascending: false });
-
-      if (error) throw error;
+      const res = await fetch(API_BASE);
+      const data = await res.json();
       setTasks(data || []);
     } catch (error) {
       console.error("Error fetching tasks:", error);
@@ -48,34 +45,38 @@ const Index = () => {
     fetchTasks();
   }, []);
 
-  // Create or update task
+  // Create or update a task
   const handleSave = async (title: string, description: string) => {
     try {
       if (editingTask) {
         // Update existing task
-        const { error } = await supabase
-          .from("tasks")
-          .update({ title, description })
-          .eq("id", editingTask.id);
-
-        if (error) throw error;
-        toast({
-          title: "Success",
-          description: "Task updated successfully",
+        const res = await fetch(`${API_BASE}/${editingTask.id}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title, description }),
         });
+
+        if (!res.ok) throw new Error("Update failed");
+        toast({ title: "Success", description: "Task updated successfully" });
       } else {
         // Create new task
-        const { error } = await supabase
-          .from("tasks")
-          .insert({ title, description });
+        const newTask = {
+          id: crypto.randomUUID(),
+          title,
+          description,
+          status: "active",
+        };
 
-        if (error) throw error;
-        toast({
-          title: "Success",
-          description: "Task created successfully",
+        const res = await fetch(API_BASE, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(newTask),
         });
+
+        if (!res.ok) throw new Error("Create failed");
+        toast({ title: "Success", description: "Task created successfully" });
       }
-      
+
       fetchTasks();
       setEditingTask(null);
     } catch (error) {
@@ -88,39 +89,34 @@ const Index = () => {
     }
   };
 
-  // Toggle task completion
+  // Toggle task status (Active/Completed)
   const handleToggle = async (id: string, completed: boolean) => {
     try {
-      const { error } = await supabase
-        .from("tasks")
-        .update({ completed })
-        .eq("id", id);
+      const newStatus = completed ? "completed" : "active";
+      const res = await fetch(`${API_BASE}/${id}/status`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: newStatus }),
+      });
 
-      if (error) throw error;
+      if (!res.ok) throw new Error("Status update failed");
       fetchTasks();
     } catch (error) {
       console.error("Error toggling task:", error);
       toast({
         title: "Error",
-        description: "Failed to update task",
+        description: "Failed to update task status",
         variant: "destructive",
       });
     }
   };
 
-  // Delete task
+  // (Optional) Delete task (if you add DELETE route in backend)
   const handleDelete = async (id: string) => {
     try {
-      const { error } = await supabase
-        .from("tasks")
-        .delete()
-        .eq("id", id);
-
-      if (error) throw error;
-      toast({
-        title: "Success",
-        description: "Task deleted successfully",
-      });
+      const res = await fetch(`${API_BASE}/${id}`, { method: "DELETE" });
+      if (!res.ok) throw new Error("Delete failed");
+      toast({ title: "Success", description: "Task deleted successfully" });
       fetchTasks();
     } catch (error) {
       console.error("Error deleting task:", error);
@@ -140,15 +136,15 @@ const Index = () => {
 
   // Filter tasks
   const filteredTasks = tasks.filter((task) => {
-    if (filter === "active") return !task.completed;
-    if (filter === "completed") return task.completed;
+    if (filter === "active") return task.status === "active";
+    if (filter === "completed") return task.status === "completed";
     return true;
   });
 
   const stats = {
     total: tasks.length,
-    active: tasks.filter((t) => !t.completed).length,
-    completed: tasks.filter((t) => t.completed).length,
+    active: tasks.filter((t) => t.status === "active").length,
+    completed: tasks.filter((t) => t.status === "completed").length,
   };
 
   return (
@@ -186,7 +182,7 @@ const Index = () => {
               <Circle className="h-10 w-10 text-primary" />
             </div>
           </div>
-          
+
           <div className="bg-card rounded-lg p-6 shadow-card border border-border">
             <div className="flex items-center justify-between">
               <div>
@@ -196,7 +192,7 @@ const Index = () => {
               <Circle className="h-10 w-10 text-accent" />
             </div>
           </div>
-          
+
           <div className="bg-card rounded-lg p-6 shadow-card border border-border">
             <div className="flex items-center justify-between">
               <div>
@@ -210,25 +206,13 @@ const Index = () => {
 
         {/* Filter Tabs */}
         <div className="flex gap-2 mb-6 bg-card rounded-lg p-2 shadow-card border border-border w-fit">
-          <Button
-            variant={filter === "all" ? "default" : "ghost"}
-            onClick={() => setFilter("all")}
-            size="sm"
-          >
+          <Button variant={filter === "all" ? "default" : "ghost"} onClick={() => setFilter("all")} size="sm">
             All
           </Button>
-          <Button
-            variant={filter === "active" ? "default" : "ghost"}
-            onClick={() => setFilter("active")}
-            size="sm"
-          >
+          <Button variant={filter === "active" ? "default" : "ghost"} onClick={() => setFilter("active")} size="sm">
             Active
           </Button>
-          <Button
-            variant={filter === "completed" ? "default" : "ghost"}
-            onClick={() => setFilter("completed")}
-            size="sm"
-          >
+          <Button variant={filter === "completed" ? "default" : "ghost"} onClick={() => setFilter("completed")} size="sm">
             Completed
           </Button>
         </div>
@@ -241,9 +225,7 @@ const Index = () => {
         ) : filteredTasks.length === 0 ? (
           <div className="text-center py-12 bg-card rounded-lg shadow-card border border-border">
             <p className="text-muted-foreground mb-4">
-              {filter === "all"
-                ? "No tasks yet. Create your first task to get started!"
-                : `No ${filter} tasks.`}
+              {filter === "all" ? "No tasks yet. Create your first task to get started!" : `No ${filter} tasks.`}
             </p>
             {filter === "all" && (
               <Button
@@ -261,13 +243,7 @@ const Index = () => {
         ) : (
           <div className="space-y-3">
             {filteredTasks.map((task) => (
-              <TaskCard
-                key={task.id}
-                task={task}
-                onToggle={handleToggle}
-                onEdit={handleEdit}
-                onDelete={handleDelete}
-              />
+              <TaskCard key={task.id} task={task} onToggle={handleToggle} onEdit={handleEdit} onDelete={handleDelete} />
             ))}
           </div>
         )}
